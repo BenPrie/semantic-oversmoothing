@@ -73,16 +73,16 @@ def train(
             train_acc = torch.mean(
                 (torch.argmax(node_embeddings[data.train_mask], dim=1) == data.y[data.train_mask]).to(float))
 
-            stats['train_loss'] = train_loss
-            stats['train_acc'] = train_acc
+            stats['train_loss'].append(train_loss.item())
+            stats['train_acc'].append(train_acc.item())
 
             # And again for val.
             val_loss = loss_fn(logits[data.val_mask], data.y[data.val_mask])
             val_acc = torch.mean(
                 (torch.argmax(node_embeddings[data.val_mask], dim=1) == data.y[data.val_mask]).to(float))
 
-            stats['val_loss'] = val_loss
-            stats['val_acc'] = val_acc
+            stats['val_loss'].append(val_loss.item())
+            stats['val_acc'].append(val_acc.item())
 
             if verbose and epoch_idx % 10 == 0:
                 print(
