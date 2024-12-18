@@ -20,8 +20,10 @@ def train(
         epochs: int = 100,
         lr: float = 1e-3,
         weight_decay: float = 5e-4,
+        max_patience: int = 10,
         progress_bar: bool = True,
-        verbose: bool = True
+        verbose: bool = True,
+        print_interval: int = 10
 ) -> typing.Dict:
     # Move to device.
     model.to(device)
@@ -66,7 +68,7 @@ def train(
         with torch.no_grad():
             # Get the logits and node embeddings.
             logits = model(data.x, data.edge_index)
-            node_embeddings = model.generate_node_embeddings(data.x, data.edge_index)
+            node_embeddings = F.log_softmax(logits)
 
             # Compute train loss and accuracy (percentage of nodes classified correctly).
             train_loss = loss_fn(logits[data.train_mask], data.y[data.train_mask])
@@ -84,9 +86,11 @@ def train(
             stats['val_loss'].append(val_loss.item())
             stats['val_acc'].append(val_acc.item())
 
-            if verbose and epoch_idx % 10 == 0:
+            if verbose and epoch_idx % print_interval == 0:
                 print(
                     f'Epoch {epoch_idx:03d}: train loss - {train_loss:.3f}, train acc - {train_acc:.3f}, val loss - {val_loss:.3f}, val acc - {val_acc:.3f}')
+
+            # TODO: Early stopping if necessary.
 
     return stats
 
