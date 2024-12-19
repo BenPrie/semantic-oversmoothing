@@ -17,6 +17,7 @@ def train(
         model: torch.nn.Module,
         data: torch_geometric.data.data.Data,
         device: str,
+        loss_fn = F.cross_entropy,
         epochs: int = 100,
         lr: float = 1e-3,
         weight_decay: float = 5e-4,
@@ -28,9 +29,6 @@ def train(
     # Move to device.
     model.to(device)
     data.to(device)
-
-    # Loss function.
-    loss_fn = F.cross_entropy
 
     # Optimiser.
     optimiser = torch.optim.Adam(

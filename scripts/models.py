@@ -1,10 +1,15 @@
 # Imports, as always...
 
+import time
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GCNConv
-from torch_kmeans import KMeans, CosineSimilarity
+
+from torch_scatter import scatter_mean
+
+from scripts.utils import kmeans_cluster_nodes
 
 # Set device
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -83,7 +88,8 @@ class BackboneModel(nn.Module):
                 if l == self.L_0 and self.residual_method is ClusterKeepingRC and self.training:
                     for cluster_keeping_layer in self.layers[self.L_0:-1]:
                         # Passing raw logits because a log softmax is just not working out.
-                        cluster_keeping_layer.update_cluster_info(X)
+                        cluster_info = kmeans_cluster_nodes(X, self.K)
+                        cluster_keeping_layer.update_cluster_info(X, cluster_info)
 
                 # Update the node features.
                 X = layer(X, A)
@@ -308,6 +314,8 @@ class ClusterKeepingRC(nn.Module):
             act_fn=F.relu,
             # These hyperparameters are not set by the Backbone model -- do these manually.
             alpha: float = 1.,
+            beta: float = 1.,
+            gamma: float = 1.,
             K: int = 5
     ):
         super(ClusterKeepingRC, self).__init__()
@@ -315,7 +323,6 @@ class ClusterKeepingRC(nn.Module):
         Args:
             n_nodes: number of nodes in the graph
             aggregation_function: arbitrary aggregation function of a GNN model
-            alpha: hyperparameter in [0, 1] determining the influence of the global control
             act_fn: nonlinear activation function
         '''
 
@@ -326,27 +333,47 @@ class ClusterKeepingRC(nn.Module):
         # Aggregation weights (as a vector that will be diagonalised into a matrix in the forward).
         self.n_nodes = n_nodes
         self.theta = torch.tensor(0).to(device)
+        self.phi = torch.zeros(n_nodes).to(device)
+        self.psi = torch.zeros(n_nodes).to(device)
         self.I = torch.eye(n_nodes).to(device)
 
         # Hyperparameters.
-        self.K = K
         self.alpha = alpha
+        self.beta = beta
+        self.gamma = gamma
+        self.K = K
 
-        # Keeping the cluster information of the L_0-th layer.
+        # Maintaining cluster information (to avoid repeated calculation).
         self.cluster_ids_0 = None
         self.cluster_centers_0 = None
         self.dist_0 = None
+        self.cluster_ids_l = None
+        self.cluster_centers_l = None
         self.dist_l = None
 
     def forward(self, X, A_hat) -> torch.Tensor:
         # Recalculate the control parameters.
         # This should only happen during training -- it's not cheap!
         if self.training:
-            # We're going to pass raw logits, because a log softmax puts roughly equates all features.
-            self.theta = self.compute_theta(X)
+            # No gradients, these updates are manual.
+            with torch.no_grad():
+                # Cluster.
+                # We're going to pass raw logits, because a log softmax roughly equates all features.
+                clustering = kmeans_cluster_nodes(X, self.K)
+                self.cluster_ids_l, self.cluster_centers_l = clustering.labels[0], clustering.centers[0]
+
+                # Update control parameters.
+                pre_theta = time.time()
+                self.theta = self.compute_theta(X)
+                pre_phi = time.time()
+                self.phi = self.compute_phi(X)
+                pre_psi = time.time()
+                self.psi = self.compute_psi(A_hat)
+                post = time.time()
+                print(f'Updated control parameters: theta={pre_phi - pre_theta:.3f}s, phi={pre_psi - pre_phi:.3f}s, psi={post - pre_phi:.3f}s')
 
         # Diagonalise the control parameters into a matrix (this is differentiable).
-        xi = torch.diag_embed(torch.tensor([self.theta] * self.n_nodes)).to(torch.float).to(device)
+        xi = torch.diag_embed(self.theta * self.phi * self.psi).to(torch.float).to(device)
 
         # Compute the two terms.
         aggregated_term = torch.matmul(xi, self.sigma(self.f(X, A_hat)))
@@ -360,29 +387,68 @@ class ClusterKeepingRC(nn.Module):
         # We use mean rather than sum to avoid enormous distance values.
         return torch.mean(torch.linalg.norm(H - cluster_centers[cluster_ids], dim=1))
 
-    def update_cluster_info(self, H_0):
+    def update_cluster_info(self, H_0, cluster_info=None):
         # Update the info.
-        cluster_info = self.kmeans_cluster_nodes(H_0)
+        if cluster_info is None:
+            # Possibly calculate it for ourselves.
+            cluster_info = kmeans_cluster_nodes(H_0, self.K)
         self.cluster_ids_0, self.cluster_centers_0 = cluster_info.labels[0], cluster_info.centers[0]
 
         # Recalculate dist_0 with the newly updated info.
         self.dist_0 = self.compute_dist(H_0, self.cluster_ids_0, self.cluster_centers_0)
 
+    # The silhouette coefficient; inversely proportional to the uncertainty of clustering for a node.
+    def compute_silhouette_coefficient(self, H, i):
+        H_i = H[self.cluster_ids_l[i]]
+        H_js = H[self.cluster_ids_l == self.cluster_ids_l[i]]
+
+        # Average distance from the i-th node to the other nodes in its assigned cluster.
+        a_i = torch.mean(torch.linalg.norm(H_js - H_i, dim=1))
+
+        # Distance to the next nearest cluster (i.e. NOT its own cluster).
+        # The paper considers the average distance to every node in a cluster to calculate this.
+        # That is absurdly expensive, so we'll just consider centroids.
+        other_cluster_indices = list(range(self.cluster_ids_l[i])) + list(range(self.cluster_ids_l[i]+1, self.K))
+        b_i = torch.mean(torch.linalg.norm(self.cluster_centers_l[other_cluster_indices] - H_i,  dim=1))
+
+        return (b_i - a_i) / max(a_i, b_i)
+
+    # Dynamically estimating node labels.
+    def compute_xi_i(self, i, A):
+        # Infer the neighbourhood of the i-th node from the graph's adjacency (given as a tensor of vertex pairs).
+        # We assume that the graph is not directed.
+        neighbourhood = torch.concat([A[1][A[0] == i], torch.tensor([i]).to(device)]).unique()
+        neighbourhood_clusters = self.cluster_ids_l[neighbourhood]
+
+        # Generate counts for each cluster.
+        cluster_counts = [neighbourhood_clusters[neighbourhood == k].size(0) for k in range(self.K)]
+
+        return (1 / neighbourhood.size(0)) * max(cluster_counts)
+
+    # CONTROL PARAMETERS...
+
     # Computing the global control parameter.
     def compute_theta(self, H):
-        with torch.no_grad():
-            clustering = self.kmeans_cluster_nodes(H)
-            self.dist_l = self.compute_dist(H, clustering.labels[0], clustering.centers[0])
+        self.dist_l = self.compute_dist(H, self.cluster_ids_l, self.cluster_centers_l)
 
-            return torch.tensor(min((self.dist_0 / self.dist_l) ** self.alpha, 1)).to(device)
+        return min((self.dist_0 / self.dist_l) ** self.alpha, 1)
 
-    def kmeans_cluster_nodes(self, H):
-        # Cluster the nodes for the l-th layer.
-        kmeans = KMeans(
-            n_clusters=self.K,
-            #init_method='k-means++',
-            normalize='unit',
-            verbose=False
-        ).to(device)
+    # Computing the silhouette-based local control parameter.
+    def compute_phi(self, H):
+        S = torch.tensor([self.compute_silhouette_coefficient(H, i) for i in range(self.n_nodes)]).to(device)
 
-        return kmeans(H.unsqueeze(0))
+        return ((S - 1) / 2) ** self.beta
+
+    # Computing the homophily-based local control parameter.
+    def compute_psi(self, A):
+        # This loop approach takes ages!
+        #return torch.tensor([self.compute_xi_i(i, A) for i in range(self.n_nodes)]) * self.gamma
+
+        # Adapting PyTorch Geometric's homophily method (node version), with cluster labels as estimated node labels.
+        # The given homophily function takes an average to give a graph-level statistic. We want node level.
+        y_pred = self.cluster_ids_l
+        y_pred = y_pred.squeeze(-1) if y_pred.dim() > 1 else y_pred
+        row, col = A
+        out = torch.zeros_like(row, dtype=torch.float)
+        out[y_pred[row] == y_pred[col]] = 1.
+        return scatter_mean(out, col, dim=0, dim_size=y_pred.size(0))

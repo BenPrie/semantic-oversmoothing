@@ -13,10 +13,28 @@ from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+# Clustering
+from torch_kmeans import KMeans
+
+# Set device
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
 # Beautification.
 sns.set_context('paper')
 sns.set_style('darkgrid')
 sns.set_palette('Set2')
+
+
+def kmeans_cluster_nodes(H, K):
+    # Cluster the nodes for the l-th layer.
+    kmeans = KMeans(
+        n_clusters=K,
+        init_method='k-means++',
+        normalize='unit',
+        verbose=False
+    ).to(device)
+
+    return kmeans(H.unsqueeze(0))
 
 
 def produce_reduced_embeddings(
