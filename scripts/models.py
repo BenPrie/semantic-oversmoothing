@@ -451,4 +451,4 @@ class ClusterKeepingRC(nn.Module):
         row, col = A
         out = torch.zeros_like(row, dtype=torch.float)
         out[y_pred[row] == y_pred[col]] = 1.
-        return scatter_mean(out, col, dim=0, dim_size=y_pred.size(0))
+        return scatter_mean(out, col, dim=0, dim_size=y_pred.size(0)) ** self.gamma
