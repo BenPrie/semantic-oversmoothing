@@ -371,7 +371,6 @@ class ClusterKeepingRC(nn.Module):
                 pre_psi = time.time()
                 self.psi = self.compute_psi(A_hat)
                 post = time.time()
-                print(f'Updated control parameters: theta={pre_phi - pre_theta:.3f}s, phi={pre_psi - pre_phi:.3f}s, psi={post - pre_phi:.3f}s')
 
         # Diagonalise the control parameters into a matrix (this is differentiable).
         xi = torch.diag_embed(self.theta * self.phi * self.psi).to(torch.float).to(device)
