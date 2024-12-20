@@ -263,6 +263,7 @@ class FreeRC(nn.Module):
         return F.log_softmax(self.forward(X, A), dim=1)
 
 
+# Learning residual connections hierarchically, with freely-learnt global and local weights.
 class HierarchicalRC(nn.Module):
     def __init__(
             self,
@@ -305,7 +306,7 @@ class HierarchicalRC(nn.Module):
         return F.log_softmax(self.forward(X, A), dim=1)
 
 
-# Freely learning the residual connections.
+# Computing the residual connections manually as per Li et al. (2024).
 class ClusterKeepingRC(nn.Module):
     def __init__(
             self,
