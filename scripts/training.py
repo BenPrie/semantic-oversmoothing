@@ -88,7 +88,7 @@ def train(
                 print(
                     f'Epoch {epoch_idx:03d}: train loss - {train_loss:.3f}, train acc - {train_acc:.3f}, val loss - {val_loss:.3f}, val acc - {val_acc:.3f}')
 
-            # TODO: Early stopping if necessary.
+            # Could do some early stopping, but it might not be needed.
 
     return stats
 

@@ -79,7 +79,7 @@ class BackboneModel(nn.Module):
                 for l, (x, y) in enumerate(zip(input_dims, output_dims))
             ])
 
-    def forward(self, X, A) -> torch.Tensor:
+    def forward(self, X, A, final_layer=True) -> torch.Tensor:
         if self.n_layers and self.n_layers != 0:
             for l, layer in enumerate(self.layers[:-1]):
                 # Once we hit layer L_0, cluster and send the result to the layers that need it.
@@ -100,8 +100,9 @@ class BackboneModel(nn.Module):
                 # Dropout during training.
                 X = F.dropout(X, p=self.dropout_ratio, training=self.training)
 
-            # No activation (or dropout) on the final layer.
-            X = self.layers[-1](X, A)
+            if final_layer:
+                # No activation (or dropout) on the final layer.
+                X = self.layers[-1](X, A)
 
         # Special case for 0-layer model.
         else:
@@ -110,7 +111,7 @@ class BackboneModel(nn.Module):
         return X
 
     def generate_node_embeddings(self, X, A) -> torch.Tensor:
-        return F.log_softmax(self.forward(X, A), dim=1)
+        return F.log_softmax(self.forward(X, A, final_layer=self.n_layers==1), dim=1)
 
 
 # A baseline GCN. This should be equivalent to the BackboneModel class with residual_method = None.
