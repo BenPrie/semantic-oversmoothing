@@ -365,13 +365,9 @@ class ClusterKeepingRC(nn.Module):
                 self.cluster_ids_l, self.cluster_centers_l = clustering.labels[0], clustering.centers[0]
 
                 # Update control parameters.
-                pre_theta = time.time()
                 self.theta = self.compute_theta(X)
-                pre_phi = time.time()
                 self.phi = self.compute_phi(X)
-                pre_psi = time.time()
                 self.psi = self.compute_psi(A_hat)
-                post = time.time()
 
         # Diagonalise the control parameters into a matrix (this is differentiable).
         xi = torch.diag_embed(self.theta * self.phi * self.psi).to(torch.float).to(device)
